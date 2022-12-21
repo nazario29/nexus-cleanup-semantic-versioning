@@ -1,0 +1,153 @@
+#!/bin/bash
+
+function V() # $1-a $2-op $3-$b
+{
+  local a=$1 op=$2 b=$3 al=${1##*.} bl=${3##*.}
+  while [[ $al =~ ^[[:digit:]] ]]; do al=${al:1}; done
+  while [[ $bl =~ ^[[:digit:]] ]]; do bl=${bl:1}; done
+  local ai=${a%$al} bi=${b%$bl}
+
+  local ap=${ai//[[:digit:]]} bp=${bi//[[:digit:]]}
+  ap=${ap//./.0} bp=${bp//./.0}
+
+  local w=1 fmt=$a.$b x IFS=.
+  for x in $fmt; do [ ${#x} -gt $w ] && w=${#x}; done
+  fmt=${*//[^.]}; fmt=${fmt//./%${w}s}
+  printf -v a $fmt $ai$bp; printf -v a "%s-%${w}s" $a $al
+  printf -v b $fmt $bi$ap; printf -v b "%s-%${w}s" $b $bl
+
+  case $op in
+    '<='|'>=' ) [ "$a" ${op:0:1} "$b" ] || [ "$a" = "$b" ] ;;
+    * )         [ "$a" $op "$b" ] ;;
+  esac
+}
+
+function P { printf "$@"; }
+function EXPECT { printf "$@"; }
+function CODE { awk $BASH_LINENO'==NR{print " "$2,$3,$4}' "$0"; }
+
+function version_compare () {
+  function sub_ver () {
+    local len=${#1}
+    temp=${1%%"."*} && indexOf=`echo ${1%%"."*} | echo ${#temp}`
+    echo -e "${1:0:indexOf}"
+  }
+  function cut_dot () {
+    local offset=${#1}
+    local length=${#2}
+    echo -e "${2:((++offset)):length}"
+  }
+  if [ -z "$1" ] || [ -z "$2" ]; then
+    echo "=" && return 0
+  fi
+  local v1=`echo -e "${1}" | tr -d '[[:space:]]'`
+  local v2=`echo -e "${2}" | tr -d '[[:space:]]'`
+  local v1_sub=`sub_ver $v1`
+  local v2_sub=`sub_ver $v2`
+  if (( v1_sub > v2_sub )); then
+    echo ">"
+  elif (( v1_sub < v2_sub )); then
+    echo "<"
+  else
+    version_compare "$(cut_dot "$v1_sub" "$v1")" "$(cut_dot "$v2_sub" "$v2")"
+  fi
+}
+
+function mkfile() { 
+  mkdir -p "$(dirname "$1")" && touch "$1" ;  
+}
+
+function remove_dockerimages_by_semver(){
+
+    # Replace microservice_name slash characters
+    microservice_name="${microservice_name//\//%2F}"
+
+    # Get docker images
+    a=0
+    b=0
+    c=0
+    microservice_dockerimage_continuationtoken=("empty")
+    while [[ "${microservice_dockerimage_continuationtoken}" != "null" ]]; do
+      continuationtoken=$(echo "${microservice_dockerimage_continuationtoken}")
+      if [[ "$microservice_dockerimage_continuationtoken" == "empty" ]]; then
+        microservice_dockerimage_request=$(curl -u "$username:$password" -X 'GET' \
+          "https://$nexus_url/service/rest/v1/search?repository=$docker_repository&docker.imageName=$microservice_name" -H 'accept: application/json'
+        )
+      else
+        microservice_dockerimage_request=$(curl -u "$username:$password" -X 'GET' \
+          "https://$nexus_url/service/rest/v1/search?continuationToken=$continuationtoken&repository=$docker_repository&docker.imageName=$microservice_name" -H 'accept: application/json'
+        )
+      fi
+
+      # Populate variables
+      microservice_dockerimage_continuationtoken_list=$(echo "${microservice_dockerimage_request}" | jq -r '.continuationToken' )
+      microservice_dockerimage_continuationtoken=$(echo "$microservice_dockerimage_continuationtoken_list")
+
+      microservice_dockerimage_id_list=$(echo "${microservice_dockerimage_request}" | jq -r '.items| .[] | .id' )
+      microservice_dockerimage_id_item_list=($microservice_dockerimage_id_list)
+      for microservice_dockerimage_id_item in "${microservice_dockerimage_id_item_list[@]}"; do
+        microservice_dockerimage_id["$b"]=$microservice_dockerimage_id_item
+        b=$((b+1))
+      done
+      microservice_dockerimage_version_list=$(echo "${microservice_dockerimage_request}" | jq -r '.items| .[] | .version' )
+      microservice_dockerimage_version_item_list=($microservice_dockerimage_version_list)
+      for microservice_dockerimage_version_item in "${microservice_dockerimage_version_item_list[@]}"; do
+        microservice_dockerimage_version["$c"]=$microservice_dockerimage_version_item
+        c=$((c+1))
+      done
+    done
+    if [[ -z "$microservice_dockerimage_version" ]] ; then
+      echo -e "Could not get the microservice data! Please review the parameters/variables"
+      return 0
+    fi
+
+    # Replace microservice_name slash characters for echo output
+    microservice_name="${microservice_name//%2F/\/}"
+    
+    #Create resource file
+    mkfile "$microservice_name".txt
+
+    # Start iteration
+    i=0
+    d=0
+    for microservice_version in "${microservice_dockerimage_version[@]}"; do
+      declare -a dockerimages_to_delete
+      compare=$(V "$microservice_version" '<' "$compare_version" && P + || P _;)
+      if [[ $compare == "+" ]] ; then
+        dockerimages_names_to_delete["$i"]=$microservice_version
+        dockerimages_ids_to_delete["$i"]=${microservice_dockerimage_id[$d]}
+        echo -e "Deleting docker image name: $microservice_name:${dockerimages_names_to_delete[$i]}" | tee -a "$microservice_name".txt
+        echo -e "Deleting docker image id: ${microservice_dockerimage_id[$d]}" | tee -a "$microservice_name".txt 
+        i=$((i+1))
+      fi
+      d=$((d+1))
+      compare=""
+    done
+
+    # Output compare version
+    echo -e "This is compare version $compare_version"
+
+    if [[ -z "${dockerimages_names_to_delete+x}" ]] ; then
+      echo -e "No images to delete"
+      return 0
+    fi
+    # Prompt to continue for deletion
+    read -r -p "Do you want to proceed for image deletion? (yes/no) " yn
+    case $yn in 
+      yes ) echo -e "Deletion will start!"
+            n=0
+            while  [ "$n" -lt "$i" ]; do
+              id=$(echo "${dockerimages_ids_to_delete[$n]}")
+              curl -u "$username:$password" -X "DELETE" "https://$nexus_url/service/rest/v1/components/$id" -H "accept: application/json"
+              echo -e "Docker image $microservice_name:${dockerimages_names_to_delete[$n]} is deleted!"
+              n=$((n+1))
+            done 
+            echo -e "In order to delete the space on the disk please run the following tasks by this order:"
+            echo -e "1. Docker - Delete unsed SNAPSHOT"
+            echo -e "2. Admin - Compact blob store" ;;
+      no ) echo exiting...;
+        return 0;;
+      * ) echo invalid response;
+        return 1;;
+    esac
+}
