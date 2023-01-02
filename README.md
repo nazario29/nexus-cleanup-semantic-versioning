@@ -7,7 +7,8 @@ Also will prompt the user for the necessary information:
 - `username` to access nexus
 - `password` to access nexus
 - `microservice_name` to delete the images
-- `compare_version` to be used for compare 
+- `compare_version` to be used for compare
+
 The information about `nexus_url` and `docker_repository` should be filled on the respective variables from `remove_dockerimages_by_semver.sh`
 
 The script was adapted to be able to run even in `git bash` so it has some funny ways on how variables are iterated and populated :)
