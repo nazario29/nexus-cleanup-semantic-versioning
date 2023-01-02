@@ -9,7 +9,6 @@ function V() # $1-a $2-op $3-$b
 
   local ap=${ai//[[:digit:]]} bp=${bi//[[:digit:]]}
   ap=${ap//./.0} bp=${bp//./.0}
-
   local w=1 fmt=$a.$b x IFS=.
   for x in $fmt; do [ ${#x} -gt $w ] && w=${#x}; done
   fmt=${*//[^.]}; fmt=${fmt//./%${w}s}
@@ -85,6 +84,7 @@ function remove_dockerimages_by_semver(){
     d=0
     for microservice_version in "${microservice_dockerimage_version[@]}"; do
       declare -a dockerimages_to_delete
+      microservice_version=$(echo "$microservice_version" | ( IFS=".$IFS" ; read m n t && echo $m.$n.$t))
       compare=$(V "$microservice_version" '<' "$compare_version" && P + || P _;)
       if [[ $compare == "+" ]] ; then
         dockerimages_names_to_delete["$i"]=$microservice_version
